@@ -80,3 +80,35 @@ Matriz de referência validada para os PDFs de demonstração:
 | Teste 1 - Loja 2 | 51419 | 2 |
 | Teste 1 - Loja 3 | 51421 | 13 |
 
+## Deploy no Render
+
+O repositório contém um `render.yaml` preparado para criar um Web Service Docker gratuito.
+
+1. No Render, escolha **New > Blueprint** e conecte o repositório
+   `folviocompany/RickMVPBack`.
+2. Confirme a branch `main` e aplique o Blueprint.
+3. Preencha as variáveis solicitadas pelo painel:
+
+   - `DATABASE_URL`: connection string PostgreSQL do Supabase, preferencialmente pelo pooler em
+     modo session e com SSL habilitado.
+   - `NVIDIA_API_KEY`: chave da API NVIDIA.
+   - `FRONTEND_ORIGINS`: URL HTTPS do frontend publicado. Enquanto o frontend não estiver no ar,
+     use temporariamente `http://localhost:5173` para testes locais.
+
+O Render fornece `PORT` automaticamente. O container executa `alembic upgrade head` antes de
+iniciar o Uvicorn, portanto as migrations são aplicadas em cada deploy. O health check utiliza
+`GET /health`.
+
+Os PDFs são gravados temporariamente em `/tmp/adi-uploads`. Isso é suficiente para o fluxo atual,
+pois os pedidos extraídos ficam no PostgreSQL, mas um processamento em andamento não sobrevive a
+reinícios. Antes do uso em produção, mova o processamento para um worker durável e adicione
+autenticação para impedir consumo não autorizado da API NVIDIA.
+
+Depois do deploy, valide:
+
+```text
+https://SEU-SERVICO.onrender.com/health
+https://SEU-SERVICO.onrender.com/ready
+https://SEU-SERVICO.onrender.com/docs
+```
+
