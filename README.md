@@ -45,3 +45,38 @@ modo session. Aplique o schema com `alembic upgrade head`.
 O processamento usa `BackgroundTasks` nesta primeira etapa. Antes do deploy definitivo ele será
 movido para um worker durável, para sobreviver a reinícios e escalonamento do servidor web.
 
+## Roteiro de demonstração local
+
+Inicie a API em um terminal:
+
+```powershell
+cd backend-python
+.venv\Scripts\Activate.ps1
+alembic upgrade head
+python run.py
+```
+
+Confirme que banco e NVIDIA estão disponíveis em `http://localhost:8080/ready`. A documentação
+interativa da API fica em `http://localhost:8080/docs`.
+
+Em outro terminal, inicie o frontend:
+
+```powershell
+cd frontend
+npm install
+npm run dev
+```
+
+Abra `http://localhost:5173`, entre em **Novo pedido**, selecione o PDF e acompanhe o progresso.
+Ao concluir, confira número do pedido, prazo, frete, códigos, quantidades e preços antes de exportar
+o Excel. PDFs com clientes ou produtos ainda não cadastrados aparecem como pendentes de revisão;
+isso é esperado e evita aprovar automaticamente um mapeamento desconhecido.
+
+Matriz de referência validada para os PDFs de demonstração:
+
+| Documento | Pedido | Itens esperados |
+| --- | ---: | ---: |
+| Teste 1 - Loja 1 | 51417 | 12 |
+| Teste 1 - Loja 2 | 51419 | 2 |
+| Teste 1 - Loja 3 | 51421 | 13 |
+

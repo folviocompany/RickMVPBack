@@ -1,6 +1,7 @@
 import asyncio
 import re
 from decimal import Decimal
+from difflib import SequenceMatcher
 
 from openai import (
     APIConnectionError,
@@ -73,39 +74,64 @@ OUTPUT_FORMAT = """{
 }"""
 
 SUPPLEMENTAL_MARKER = "--- OCR SUPLEMENTAR DE PÁGINAS COMPLETAS ---"
+FACT_FALLBACK_MARKER = "--- OCR DETALHADO PARA CAMPOS AUSENTES ---"
 
 
 def _primary_ocr_text(document_text: str) -> str:
     return document_text.split(SUPPLEMENTAL_MARKER, maxsplit=1)[0].strip()
 
 
-def bic_item_candidates(document_text: str) -> list[str]:
-    document_text = _primary_ocr_text(document_text)
+def _candidate_indexes(lines: list[str]) -> list[int]:
     ignored_terms = ("FORNECEDOR", "PEDIDO", "COMPRA", "CNPJ", "TOTAIS")
-    return [
-        line.strip()
-        for line in document_text.splitlines()
-        if re.search(r"\bBIC\b", line, flags=re.IGNORECASE)
-        and not any(term in line.upper() for term in ignored_terms)
-    ]
+    has_merchandise_header = any("MERCADORIA" in line.upper() for line in lines)
+    inside_items = not has_merchandise_header
+    indexes = []
+    for index, line in enumerate(lines):
+        upper_line = line.upper()
+        if line.startswith("---") and (
+            "FAIXA 1/" in upper_line or "VISÃO GERAL" in upper_line
+        ):
+            inside_items = not has_merchandise_header
+        if "MERCADORIA" in upper_line:
+            inside_items = True
+            continue
+        if (
+            inside_items
+            and re.search(r"\bBIC", line, flags=re.IGNORECASE)
+            and not any(term in upper_line for term in ignored_terms)
+        ):
+            indexes.append(index)
+    return indexes
+
+
+def _section_candidates(section: str) -> list[str]:
+    lines = section.splitlines()
+    return [lines[index].strip() for index in _candidate_indexes(lines)]
+
+
+def _ocr_sections(document_text: str) -> tuple[str, str]:
+    primary, separator, supplemental = document_text.partition(SUPPLEMENTAL_MARKER)
+    return primary.strip(), supplemental.strip() if separator else ""
+
+
+def bic_item_candidates(document_text: str) -> list[str]:
+    primary, supplemental = _ocr_sections(document_text)
+    primary_candidates = _section_candidates(primary)
+    supplemental_candidates = _section_candidates(supplemental) if supplemental else []
+    if len(supplemental_candidates) > len(primary_candidates):
+        return supplemental_candidates
+    return primary_candidates
 
 
 def count_bic_item_candidates(document_text: str) -> int:
     return len(bic_item_candidates(document_text))
 
 
-def build_bic_item_blocks(document_text: str) -> tuple[str, list[str]]:
-    primary_text, separator, supplemental_text = document_text.partition(SUPPLEMENTAL_MARKER)
-    lines = primary_text.splitlines()
-    ignored_terms = ("FORNECEDOR", "PEDIDO", "COMPRA", "CNPJ", "TOTAIS")
-    indexes = [
-        index
-        for index, line in enumerate(lines)
-        if re.search(r"\bBIC\b", line, flags=re.IGNORECASE)
-        and not any(term in line.upper() for term in ignored_terms)
-    ]
+def _build_section_blocks(section: str) -> tuple[str, list[str]]:
+    lines = section.splitlines()
+    indexes = _candidate_indexes(lines)
     if not indexes:
-        return document_text, []
+        return section, []
 
     blocks = []
     for position, start in enumerate(indexes):
@@ -118,23 +144,34 @@ def build_bic_item_blocks(document_text: str) -> tuple[str, list[str]]:
         blocks.append("\n".join(block_lines).strip())
 
     header = "\n".join(lines[: indexes[0]]).strip()
-    if separator and supplemental_text.strip():
-        supplemental_header, supplemental_blocks = build_bic_item_blocks(
-            supplemental_text.strip()
-        )
-        header = (
-            f"{header}\n\n--- OCR SUPLEMENTAR DO CABEÇALHO ---\n{supplemental_header}"
-        )
-        blocks = [
-            (
-                f"{block}\n\n--- OCR SUPLEMENTAR DO MESMO ITEM ---\n"
-                f"{supplemental_blocks[index]}"
-                if index < len(supplemental_blocks)
-                else block
-            )
-            for index, block in enumerate(blocks)
-        ]
     return header, blocks
+
+
+def build_bic_item_blocks(document_text: str) -> tuple[str, list[str]]:
+    primary, supplemental = _ocr_sections(document_text)
+    primary_header, primary_blocks = _build_section_blocks(primary)
+    if not supplemental:
+        return primary_header, primary_blocks
+
+    supplemental_header, supplemental_blocks = _build_section_blocks(supplemental)
+    combined_header = (
+        f"{primary_header}\n\n--- OCR SUPLEMENTAR DO CABEÇALHO ---\n{supplemental_header}"
+    )
+    if len(supplemental_blocks) > len(primary_blocks):
+        return combined_header, _attach_missing_fact_fallbacks(
+            supplemental_blocks, primary_blocks
+        )
+    if len(primary_blocks) > len(supplemental_blocks):
+        return combined_header, primary_blocks
+
+    combined_blocks = [
+        (
+            f"{block}\n\n--- OCR SUPLEMENTAR DO MESMO ITEM ---\n"
+            f"{supplemental_blocks[index]}"
+        )
+        for index, block in enumerate(primary_blocks)
+    ]
+    return combined_header, combined_blocks
 
 
 def _normalized_description(value: str | None) -> str:
@@ -189,6 +226,8 @@ def _code_candidates(block: str, detail_priority: int) -> list[tuple[tuple[int, 
         if not normalized.isdigit():
             continue
         normalized = normalized[-8:].zfill(8)
+        if normalized.startswith("200"):
+            normalized = "0" + normalized[1:]
         leading_zeros = len(normalized) - len(normalized.lstrip("0"))
         score = (
             -abs(leading_zeros - 3),
@@ -199,42 +238,120 @@ def _code_candidates(block: str, detail_priority: int) -> list[tuple[tuple[int, 
     return candidates
 
 
+def _block_label(block: str) -> str:
+    return _normalized_description(_block_description(block))
+
+
+def _block_description(block: str) -> str:
+    description_lines = []
+    found_product = False
+    for line in block.splitlines():
+        normalized = line.strip()
+        if re.search(r"\bBIC", normalized, flags=re.IGNORECASE):
+            found_product = True
+        if not found_product:
+            continue
+        if re.search(r"\b\d{2}/\d{2}\b", normalized):
+            break
+        if normalized and not normalized.startswith("---"):
+            description_lines.append(normalized)
+    description = " ".join(description_lines[:3])
+    return re.sub(r"\s+[A-Z0-9 ]{6,12}/\d{3}.*$", "", description).strip()
+
+
+def _product_similarity(preferred: str, fallback: str) -> float:
+    ignored = {"AP", "BARB", "BIC", "CXA", "UND", "FINAL"}
+
+    def meaningful_tokens(value: str) -> list[str]:
+        return [
+            token
+            for token in _normalized_description(value).split()
+            if len(token) >= 3 and token not in ignored and not token.isdigit()
+        ]
+
+    preferred_tokens = meaningful_tokens(preferred)
+    fallback_tokens = meaningful_tokens(fallback)
+    if not preferred_tokens or not fallback_tokens:
+        return 0
+    return sum(
+        max(SequenceMatcher(None, token, candidate).ratio() for candidate in fallback_tokens)
+        for token in preferred_tokens
+    ) / len(preferred_tokens)
+
+
+def _attach_missing_fact_fallbacks(
+    preferred_blocks: list[str], fallback_blocks: list[str]
+) -> list[str]:
+    enriched = []
+    for preferred in preferred_blocks:
+        needs_quantity = _extract_quantity(preferred) is None
+        preferred_codes = _code_candidates(preferred, detail_priority=0)
+        needs_code = not preferred_codes or max(preferred_codes)[0][0] < 0
+        if not (needs_quantity or needs_code):
+            enriched.append(preferred)
+            continue
+
+        preferred_label = _block_label(preferred)
+        matches = [
+            (
+                _product_similarity(preferred_label, _block_label(fallback)),
+                fallback,
+            )
+            for fallback in fallback_blocks
+            if _block_label(fallback)
+        ]
+        if not matches:
+            enriched.append(preferred)
+            continue
+        score, fallback = max(matches, key=lambda match: match[0])
+        supplies_quantity = needs_quantity and _extract_quantity(fallback) is not None
+        supplies_code = needs_code and bool(_code_candidates(fallback, detail_priority=0))
+        if score >= 0.55 and (supplies_quantity or supplies_code):
+            enriched.append(f"{preferred}\n\n{FACT_FALLBACK_MARKER}\n{fallback}")
+        else:
+            enriched.append(preferred)
+    return enriched
+
+
 def _apply_block_facts(extraction: DocumentoExtraido, blocks: list[str]) -> None:
     items = [item for order in extraction.pedidos for item in order.itens]
     if len(items) != len(blocks):
         return
     for item, combined_block in zip(items, blocks, strict=True):
-        detail, separator, supplemental = combined_block.partition(
-            "--- OCR SUPLEMENTAR DO MESMO ITEM ---"
+        sources = [
+            source.strip()
+            for source in re.split(
+                rf"(?:--- OCR SUPLEMENTAR DO MESMO ITEM ---|{re.escape(FACT_FALLBACK_MARKER)})",
+                combined_block,
+            )
+            if source.strip()
+        ]
+        quantity = next(
+            (value for source in sources if (value := _extract_quantity(source)) is not None),
+            None,
         )
-        quantity = _extract_quantity(supplemental) if separator else None
-        quantity = quantity or _extract_quantity(detail)
         if quantity is not None:
             item.quantidade = quantity
 
-        unit_price = _extract_unit_price(detail)
-        unit_price = unit_price or (_extract_unit_price(supplemental) if separator else None)
+        unit_price = next(
+            (value for source in sources if (value := _extract_unit_price(source)) is not None),
+            None,
+        )
         if unit_price is not None:
             item.valor_unitario = unit_price
 
-        codes = _code_candidates(detail, detail_priority=1)
-        if separator:
-            codes.extend(_code_candidates(supplemental, detail_priority=0))
+        codes = []
+        for priority, source in enumerate(sources):
+            codes.extend(_code_candidates(source, detail_priority=-priority))
         if codes:
             _, code = max(codes)
             item.seq_bic = None
             item.ref_cliente = None
             item.codigo_produto = code
 
-        description_lines = [
-            line.strip()
-            for line in combined_block.splitlines()
-            if re.search(r"\bBIC\b", line, flags=re.IGNORECASE)
-        ]
-        if description_lines:
-            longest_description = max(description_lines, key=len)
-            if len(longest_description) > len(item.descricao or "") * 1.25:
-                item.descricao = longest_description
+        description = _block_description(sources[0])
+        if description:
+            item.descricao = description
 
 
 def _extract_payment_terms(header: str) -> str | None:
