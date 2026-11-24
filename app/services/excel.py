@@ -36,6 +36,9 @@ def generate_order_excel(order: PedidoResponse) -> bytes:
     total_quantity = 0
     total_value = 0
     for item in order.itens:
+        item_total = item.valor_total
+        if item_total is None and item.valor_unitario is not None:
+            item_total = item.valor_unitario * item.quantidade
         sheet.append(
             [
                 item.codigo_original,
@@ -44,7 +47,7 @@ def generate_order_excel(order: PedidoResponse) -> bytes:
                 item.embalagem_cx,
                 item.quantidade,
                 item.valor_unitario,
-                item.valor_total,
+                item_total,
                 item.observacao,
                 "OK" if item.mapeado else "Revisar",
             ]
@@ -53,7 +56,7 @@ def generate_order_excel(order: PedidoResponse) -> bytes:
         for cell in sheet[sheet.max_row]:
             cell.fill = fill
         total_quantity += item.quantidade
-        total_value += item.valor_total or 0
+        total_value += item_total or 0
 
     sheet.append(["TOTAL", None, None, None, total_quantity, None, total_value, None, None])
     for cell in sheet[sheet.max_row]:

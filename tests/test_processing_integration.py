@@ -8,7 +8,7 @@ from fastapi import BackgroundTasks
 from openpyxl import load_workbook
 from sqlalchemy import delete
 
-from app.api.orders import export_order, get_order
+from app.api.orders import approve_order, export_order, get_order, list_orders, update_order
 from app.api.processing import create_process, get_process, list_processed_orders
 from app.db.session import session_factory
 from app.llm.nvidia import NvidiaExtractionProvider
@@ -23,6 +23,7 @@ from app.models.entities import (
     RazaoSocial,
 )
 from app.schemas.extraction import DocumentoExtraido
+from app.schemas.orders import PedidoUpdate
 from tests.pdf_factory import MemoryUpload, make_pdf
 
 pytestmark = [
@@ -63,7 +64,6 @@ async def _complete_pdf_flow_with_mocked_nvidia(monkeypatch):
                                 "descricao": "Produto para revisão",
                                 "quantidade": 2,
                                 "valor_unitario": "8.00",
-                                "valor_total": "16.00",
                             },
                         ],
                     }
@@ -135,11 +135,46 @@ async def _complete_pdf_flow_with_mocked_nvidia(monkeypatch):
             assert orders[0].itens_sem_mapeamento == 1
 
             detail = await get_order(orders[0].id, session)
+            assert detail.processamento_id == process_id
             assert detail.nome_cliente == "Cliente Teste ADI"
             assert detail.cnpj_cliente == "99999999000199"
             assert detail.numero_pdf == "TESTE-001"
+            assert detail.total_valor == 66
             assert detail.itens[0].codigo_industria == "BIC-TESTE-001"
             assert detail.itens[1].codigo_industria is None
+
+            history = await list_orders(session, limit=50, offset=0)
+            assert any(order.id == orders[0].id for order in history)
+
+            updated = await update_order(
+                orders[0].id,
+                PedidoUpdate.model_validate(
+                    {
+                        "numeroPdf": "TESTE-001-CORRIGIDO",
+                        "cnpjCliente": "11.111.111/0001-11",
+                        "prazoPagamento": "35",
+                        "itens": [
+                            {
+                                "id": str(detail.itens[1].id),
+                                "quantidade": 3,
+                                "valorUnitario": "9.50",
+                                "valorTotal": "28.50",
+                            }
+                        ],
+                    }
+                ),
+                session,
+            )
+            assert updated.numero_pdf == "TESTE-001-CORRIGIDO"
+            assert updated.cnpj_cliente == "11111111000111"
+            assert updated.nome_cliente is None
+            assert updated.prazo_pagamento == "35"
+            assert updated.itens[1].quantidade == 3
+            assert updated.itens[1].valor_total == 28.5
+            assert updated.total_valor == 78.5
+
+            approved = await approve_order(orders[0].id, session)
+            assert approved.status.value == "APROVADO"
 
             export = await export_order(orders[0].id, session)
             content = b"".join([chunk async for chunk in export.body_iterator])
@@ -149,6 +184,13 @@ async def _complete_pdf_flow_with_mocked_nvidia(monkeypatch):
 
             exported = await get_order(orders[0].id, session)
             assert exported.status.value == "EXPORTADO"
+
+            revised = await update_order(
+                orders[0].id,
+                PedidoUpdate(numero_pdf="TESTE-001-REVISADO"),
+                session,
+            )
+            assert revised.status.value == "REVISAO"
 
     finally:
         async with session_factory() as session:

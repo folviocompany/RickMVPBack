@@ -1,114 +1,111 @@
-# ADI Backend — Python
+# Automação e conferência de Pedidos
 
-Nova implementação do backend do ADI, preservando o backend Java como referência durante a migração.
+Este repositório contém o backend em Python do sistema de automação e conferência de pedidos. A aplicação recebe arquivos PDF, extrai as informações com inteligência artificial, relaciona clientes e produtos cadastrados, salva os resultados no PostgreSQL e prepara cada pedido para revisão e exportação.
 
-## Stack
+## Tecnologias utilizadas
 
-- Python 3.12+
-- FastAPI + Pydantic
-- SQLAlchemy + Alembic
-- PostgreSQL (local ou Supabase)
-- NVIDIA NIM por API compatível com OpenAI
+1. Python 3.12 ou superior
+2. FastAPI e Pydantic
+3. SQLAlchemy e Alembic
+4. PostgreSQL local ou Supabase
+5. NVIDIA NIM para extração dos dados
+6. OpenPyXL para geração das planilhas
 
-## Início rápido
+## Preparação do ambiente
+
+Abra um terminal nesta pasta e crie o ambiente virtual.
 
 ```powershell
 python -m venv .venv
 .venv\Scripts\Activate.ps1
-pip install -e ".[dev]"
+pip install ".[dev]"
+```
+
+Crie o arquivo de configuração local a partir do exemplo disponível.
+
+```powershell
 Copy-Item .env.example .env
+```
+
+Preencha no arquivo `.env` a conexão do PostgreSQL e a chave da NVIDIA. As configurações principais são `DATABASE_URL` e `NVIDIA_API_KEY`. Nunca coloque uma chave real no arquivo `.env.example` ou em um commit.
+
+Depois de configurar as variáveis, prepare o banco de dados.
+
+```powershell
 alembic upgrade head
+```
+
+## Execução local
+
+Com o ambiente virtual ativo, inicie a API com o comando abaixo.
+
+```powershell
 python run.py
 ```
 
-No Windows, use `python run.py` para que o Psycopg utilize um event loop compatível. Em Linux e
-no container, o comando padrão do Uvicorn continua suportado.
+O servidor fica disponível em `http://localhost:8080`.
 
-Não coloque chaves reais no `.env.example` nem no Git.
+A documentação interativa pode ser acessada em `http://localhost:8080/docs`.
 
-## Supabase
+O endereço `http://localhost:8080/ready` confirma se o banco de dados e a integração com a NVIDIA estão configurados corretamente.
 
-Crie um projeto vazio e copie a connection string PostgreSQL para `DATABASE_URL`, usando o
-driver `postgresql+psycopg://`. Para backend persistente, prefira conexão direta ou pooler em
-modo session. Aplique o schema com `alembic upgrade head`.
+## Funcionamento do processamento
 
-## Endpoints iniciais
+1. O frontend envia um arquivo PDF.
+2. O backend valida o tipo e o tamanho do arquivo.
+3. O texto pesquisável é extraído diretamente do documento.
+4. Quando o PDF contém apenas imagens, o serviço utiliza OCR.
+5. A inteligência artificial identifica os pedidos e seus itens.
+6. O sistema procura clientes e produtos correspondentes no banco.
+7. Os dados são salvos e ficam disponíveis para conferência.
+8. Alterações feitas pelo usuário retornam o pedido para revisão.
+9. Depois da conferência, o pedido pode ser aprovado e exportado em Excel.
 
-- `GET /health` — processo disponível
-- `GET /ready` — verifica banco e configuração do provedor de IA
-- `POST /api/processamentos` — recebe um PDF e retorna `202 Accepted`
-- `GET /api/processamentos/{id}` — acompanha status e progresso
-- `GET /api/processamentos/{id}/pedidos` — lista os pedidos extraídos
-- `GET /api/pedidos/{id}` — retorna o pedido completo para revisão
-- `GET /api/pedidos/{id}/exportar` — gera e baixa o Excel, marcando o pedido como exportado
+Cada processamento mantém sua própria identificação. Dessa forma, pedidos originados de arquivos diferentes permanecem separados no histórico.
 
-O processamento usa `BackgroundTasks` nesta primeira etapa. Antes do deploy definitivo ele será
-movido para um worker durável, para sobreviver a reinícios e escalonamento do servidor web.
+## Recursos disponíveis
 
-## Roteiro de demonstração local
+1. Recebimento e validação de arquivos PDF
+2. Extração de uma ou várias páginas
+3. Uso de OCR quando necessário
+4. Identificação de mais de um pedido no mesmo documento
+5. Histórico persistente e paginado
+6. Edição dos dados do pedido e de seus itens
+7. Aprovação após conferência
+8. Cálculo do valor total de cada pedido
+9. Exportação de planilha Excel
 
-Inicie a API em um terminal:
+## Endereços da API
+
+1. `GET /health` informa se o processo está disponível.
+2. `GET /ready` verifica o banco e a configuração da inteligência artificial.
+3. `POST /api/processamentos` recebe um arquivo PDF.
+4. `GET /api/processamentos/{id}` informa o andamento do processamento.
+5. `GET /api/processamentos/{id}/pedidos` lista os pedidos encontrados no arquivo.
+6. `GET /api/pedidos` apresenta o histórico persistente.
+7. `GET /api/pedidos/{id}` retorna um pedido completo.
+8. `PATCH /api/pedidos/{id}` salva as correções realizadas.
+9. `POST /api/pedidos/{id}/aprovar` aprova o pedido conferido.
+10. `GET /api/pedidos/{id}/exportar` gera a planilha Excel.
+
+## Testes e qualidade
+
+Execute os testes automatizados com o ambiente virtual ativo.
 
 ```powershell
-cd backend-python
-.venv\Scripts\Activate.ps1
-alembic upgrade head
-python run.py
+python -m pytest -q
+python -m ruff check .
 ```
 
-Confirme que banco e NVIDIA estão disponíveis em `http://localhost:8080/ready`. A documentação
-interativa da API fica em `http://localhost:8080/docs`.
-
-Em outro terminal, inicie o frontend:
+O teste de integração com o PostgreSQL pode ser executado separadamente.
 
 ```powershell
-cd frontend
-npm install
-npm run dev
+$env:RUN_INTEGRATION_TESTS="1"
+python -m pytest tests\test_processing_integration.py -q
 ```
 
-Abra `http://localhost:5173`, entre em **Novo pedido**, selecione o PDF e acompanhe o progresso.
-Ao concluir, confira número do pedido, prazo, frete, códigos, quantidades e preços antes de exportar
-o Excel. PDFs com clientes ou produtos ainda não cadastrados aparecem como pendentes de revisão;
-isso é esperado e evita aprovar automaticamente um mapeamento desconhecido.
+## Apresentação local
 
-Matriz de referência validada para os PDFs de demonstração:
+Antes da demonstração, confirme o endereço `/ready`, processe um dos arquivos de teste e revise os valores exibidos. O fluxo recomendado é enviar o PDF, aguardar a extração, conferir o pedido, corrigir eventuais divergências, aprovar e exportar a planilha.
 
-| Documento | Pedido | Itens esperados |
-| --- | ---: | ---: |
-| Teste 1 - Loja 1 | 51417 | 12 |
-| Teste 1 - Loja 2 | 51419 | 2 |
-| Teste 1 - Loja 3 | 51421 | 13 |
-
-## Deploy no Render
-
-O repositório contém um `render.yaml` preparado para criar um Web Service Docker gratuito.
-
-1. No Render, escolha **New > Blueprint** e conecte o repositório
-   `folviocompany/RickMVPBack`.
-2. Confirme a branch `main` e aplique o Blueprint.
-3. Preencha as variáveis solicitadas pelo painel:
-
-   - `DATABASE_URL`: connection string PostgreSQL do Supabase, preferencialmente pelo pooler em
-     modo session e com SSL habilitado.
-   - `NVIDIA_API_KEY`: chave da API NVIDIA.
-   - `FRONTEND_ORIGINS`: URL HTTPS do frontend publicado. Enquanto o frontend não estiver no ar,
-     use temporariamente `http://localhost:5173` para testes locais.
-
-O Render fornece `PORT` automaticamente. O container executa `alembic upgrade head` antes de
-iniciar o Uvicorn, portanto as migrations são aplicadas em cada deploy. O health check utiliza
-`GET /health`.
-
-Os PDFs são gravados temporariamente em `/tmp/adi-uploads`. Isso é suficiente para o fluxo atual,
-pois os pedidos extraídos ficam no PostgreSQL, mas um processamento em andamento não sobrevive a
-reinícios. Antes do uso em produção, mova o processamento para um worker durável e adicione
-autenticação para impedir consumo não autorizado da API NVIDIA.
-
-Depois do deploy, valide:
-
-```text
-https://SEU-SERVICO.onrender.com/health
-https://SEU-SERVICO.onrender.com/ready
-https://SEU-SERVICO.onrender.com/docs
-```
-
+Os pedidos ficam armazenados no PostgreSQL e continuam disponíveis depois que o navegador ou o servidor são reiniciados.
