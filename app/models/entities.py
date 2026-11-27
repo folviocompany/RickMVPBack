@@ -13,7 +13,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -26,6 +26,16 @@ def new_uuid() -> uuid.UUID:
 
 def now() -> datetime:
     return datetime.now().astimezone()
+
+
+class ExtractaLote(Base):
+    __tablename__ = "extracta_lote"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    report: Mapped[dict] = mapped_column(JSONB)
+    criado_em: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, index=True)
+    atualizado_em: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=now, onupdate=now
+    )
 
 
 class Industria(Base):

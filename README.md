@@ -1,4 +1,33 @@
-# Automação e conferência de Pedidos
+# Extracta
+
+O novo fluxo documental local está disponível na tela `Processar lote`, em `http://localhost:5173/extracta`. Ele usa LangGraph para inspecionar páginas, escolher texto ou OCR local, reconhecer o perfil Atacadão, extrair mercadorias e reconciliar valores. A documentação desta primeira entrega está em [Extracta](docs/extracta.md).
+
+Os endpoints existentes e o fluxo anterior continuam disponíveis. O novo contrato possui histórico próprio no PostgreSQL, edição com auditoria, aprovação humana e exportação Excel conferida. Os PDFs originais continuam locais em `data/extracta`.
+
+Depois de atualizar as dependências, aplique a migration antes de iniciar a API.
+
+```powershell
+alembic upgrade head
+```
+
+Na opção `Histórico`, os lotes Extracta aparecem acima dos pedidos do fluxo anterior. Abra um lote para corrigir dados, informar o responsável e aprovar a conferência. Pendências exigem confirmação e justificativa. A planilha permanece provisória até a validação de um template Salesforce real.
+
+## Preparar o OCR no Windows
+
+Instale o executável do Tesseract além das dependências Python.
+
+```powershell
+winget install --id UB-Mannheim.TesseractOCR --exact
+New-Item -ItemType Directory -Force data\tessdata
+Copy-Item 'C:\Program Files\Tesseract-OCR\tessdata\eng.traineddata' data\tessdata
+Invoke-WebRequest 'https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/main/por.traineddata' -OutFile data\tessdata\por.traineddata
+```
+
+Use `EXTRACTA_TESSDATA_DIR=data/tessdata` no `.env`. Se o executável estiver em outra pasta, informe `EXTRACTA_TESSERACT_CMD`.
+
+Confira os idiomas em `http://localhost:8080/api/extracta/ready`. O novo agente só envia pequenos trechos à NVIDIA se `EXTRACTA_ALLOW_EXTERNAL_AI=true` estiver explicitamente configurado. O padrão é desabilitado. Veja os limites em [Recuperação e reprocessamento](docs/extracta-recovery.md). O fluxo anterior continua usando sua integração remota.
+
+## Sistema existente
 
 Este repositório contém o backend em Python do sistema de automação e conferência de pedidos. A aplicação recebe arquivos PDF, extrai as informações com inteligência artificial, relaciona clientes e produtos cadastrados, salva os resultados no PostgreSQL e prepara cada pedido para revisão e exportação.
 

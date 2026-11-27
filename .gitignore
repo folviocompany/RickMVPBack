@@ -6,4 +6,8 @@ __pycache__/
 *.py[cod]
 data/uploads/
 dist/
+samples/**/*.pdf
+tmp/
+data/tessdata/
+data/extracta/
 
